@@ -1,0 +1,24 @@
+{
+  "name": "sidebysidetranslator",
+  "version": "1.0.0",
+  "description": "Chromium/Firefox extension for translating images in a page with the option to view side by side.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "postinstall": "mkdir -p lib && cp node_modules/tesseract.js/dist/tesseract.min.js lib/ && cp node_modules/tesseract.js/dist/worker.min.js lib/ && cp node_modules/tesseract.js-core/tesseract-core.wasm.js lib/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dontloseyourheadsu/SideBySideTranslator.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/dontloseyourheadsu/SideBySideTranslator/issues"
+  },
+  "homepage": "https://github.com/dontloseyourheadsu/SideBySideTranslator#readme",
+  "dependencies": {
+    "tesseract.js": "^7.0.0"
+  }
+}
