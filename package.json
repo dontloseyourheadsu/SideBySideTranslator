@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "postinstall": "mkdir -p lib && cp node_modules/tesseract.js/dist/tesseract.min.js lib/ && cp node_modules/tesseract.js/dist/worker.min.js lib/ && cp node_modules/tesseract.js-core/tesseract-core.wasm.js lib/"
+    "postinstall": "node scripts/copy-extension-assets.mjs"
   },
   "repository": {
     "type": "git",
@@ -19,6 +19,7 @@
   },
   "homepage": "https://github.com/dontloseyourheadsu/SideBySideTranslator#readme",
   "dependencies": {
+    "@xenova/transformers": "^2.17.2",
     "tesseract.js": "^7.0.0"
   }
 }
