@@ -17,5 +17,7 @@
     "url": "https://github.com/dontloseyourheadsu/SideBySideTranslator/issues"
   },
   "homepage": "https://github.com/dontloseyourheadsu/SideBySideTranslator#readme",
-  "dependencies": {}
+  "dependencies": {
+    "dotenv": "^16.6.1"
+  }
 }

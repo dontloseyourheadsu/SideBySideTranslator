@@ -19,8 +19,9 @@ Local-first browser extension that translates text inside images directly in the
 ## Usage
 
 1. Load the unpacked extension (see Testing below).
-2. Click the popup, pick source/target languages, and start scanning.
-3. Translated overlays appear on supported images.
+2. Install dependencies in the `extension` folder: `npm install dotenv`
+3. Click the popup, pick source/target languages, and start scanning.
+4. Translated overlays appear on supported images.
 
 ## Troubleshooting image fetch / OCR
 
