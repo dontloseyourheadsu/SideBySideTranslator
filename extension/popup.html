@@ -40,6 +40,7 @@
     <label>Source Language</label>
     <select title="Source Language" id="sourceLang">
       <option value="auto">Auto-Detect</option>
+      <option value="en">English</option>
       <option value="fr">French</option>
       <option value="it">Italian</option>
       <option value="es">Spanish</option>
@@ -60,56 +61,8 @@
       >
     </div>
 
-    <div
-      id="download-ui"
-      style="
-        display: none;
-        border: 1px solid #ccc;
-        padding: 10px;
-        margin-top: 10px;
-        background: #f9f9f9;
-        border-radius: 4px;
-      "
-    >
-      <p style="margin: 0 0 10px 0; font-size: 13px">
-        <strong>Model Download Required</strong><br />First time setup requires
-        downloading the translation model (~300MB).
-      </p>
-      <button
-        type="button"
-        id="confirmDownloadBtn"
-        style="background: #2196f3; color: white; border: none; cursor: pointer"
-      >
-        Download Model
-      </button>
-      <div id="progressContainer" style="display: none; margin-top: 10px">
-        <progress
-          id="downloadProgress"
-          value="0"
-          max="100"
-          style="width: 100%"
-        ></progress>
-        <div id="progressText" style="font-size: 11px; text-align: center">
-          Initializing...
-        </div>
-      </div>
-    </div>
-
     <button type="button" id="runBtn">Translate Page Now</button>
-    <div id="status" class="status">Checking status...</div>
-    <button
-      id="resetBtn"
-      style="
-        margin-top: 20px;
-        background: #f44336;
-        color: white;
-        border: none;
-        padding: 5px;
-        font-size: 10px;
-      "
-    >
-      Reset / Force Re-download
-    </button>
+    <div id="status" class="status">Ready</div>
 
     <script src="popup.js"></script>
   </body>

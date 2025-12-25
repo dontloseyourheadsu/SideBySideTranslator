@@ -27,6 +27,6 @@
     }
   ],
   "content_security_policy": {
-    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' blob:; object-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' https://* data:"
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval' blob:; object-src 'self'; worker-src 'self' blob:; child-src 'self' blob:; connect-src 'self' https://* data: https://api.ocr.space https://api-free.deepl.com https://api.deepl.com"
   }
 }
