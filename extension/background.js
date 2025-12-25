@@ -1,266 +1,35 @@
-import { pipeline, env } from "./lib/transformers.min.js";
-import Tesseract from "./lib/tesseract.esm.min.js";
+import dotenv from "../node_modules/dotenv";
+dotenv.config();
+
+const OCR_SPACE_KEY = process.env.OCR_SPACE_KEY;
+const DEEPL_AUTH_KEY = process.env.DEEPL_AUTH_KEY;
 
 const browserAPI = self.browser || self.chrome;
 
-// Configuration
-env.allowLocalModels = false;
-env.useBrowserCache = true; // IMPORTANT: Caches model after first download
-// Configure local paths for ONNX Runtime Web
-env.backends.onnx.wasm.wasmPaths = browserAPI.runtime.getURL("lib/");
-
-let translator = null;
-let translatorPromise = null;
-let tesseractWorker = null;
-let currentTesseractLang = null;
-
-const tesseractLangMap = {
+// Language Mappings
+const uiToOcrSpace = {
   en: "eng",
-  es: "spa",
-  fr: "fra",
+  fr: "fre",
   it: "ita",
+  es: "spa",
   ja: "jpn",
-  de: "deu",
+  de: "ger",
   pt: "por",
   ru: "rus",
-  zh: "chi_sim",
+  zh: "chs", // Simplified
 };
 
-// Initialize Tesseract (OCR)
-async function initOCR(langCode) {
-  const tessLang = tesseractLangMap[langCode] || "eng";
-  console.log(`Initializing OCR for language: ${langCode} -> ${tessLang}`);
-
-  // If language changed, terminate old worker to re-initialize with new language
-  if (tesseractWorker && currentTesseractLang !== tessLang) {
-    console.log("Language changed, terminating old worker...");
-    await tesseractWorker.terminate();
-    tesseractWorker = null;
-  }
-
-  if (!tesseractWorker) {
-    console.log(`Creating new Tesseract worker for ${tessLang}...`);
-    try {
-      // Preflight: these must exist in the extension bundle
-      const workerUrl = browserAPI.runtime.getURL("lib/worker.min.js");
-      const coreUrl = browserAPI.runtime.getURL("lib/tesseract-core.wasm.js");
-      const preflight = await Promise.allSettled([
-        fetch(workerUrl).then((r) => ({
-          url: workerUrl,
-          ok: r.ok,
-          status: r.status,
-        })),
-        fetch(coreUrl).then((r) => ({
-          url: coreUrl,
-          ok: r.ok,
-          status: r.status,
-        })),
-      ]);
-      console.log("Tesseract preflight:", preflight);
-
-      // Tesseract.js v5+ syntax: createWorker(lang, oem, options)
-      tesseractWorker = await Tesseract.createWorker(tessLang, 1, {
-        workerPath: workerUrl,
-        corePath: coreUrl,
-        // Firefox MV3 CSP can block blob: workers; force using workerPath instead.
-        workerBlobURL: false,
-        logger: (m) => console.log("Tesseract:", m),
-        errorHandler: (err) => console.error("Tesseract Worker Error:", err),
-      });
-      currentTesseractLang = tessLang;
-    } catch (err) {
-      console.error("Failed to create Tesseract worker:", err);
-      const detail =
-        err && typeof err === "object"
-          ? err.message || JSON.stringify(err)
-          : String(err || "Unknown error");
-      throw new Error(`Tesseract initialization failed: ${detail}`);
-    }
-  }
-
-  return tesseractWorker;
-}
-
-// Initialize Translator (Only loads when needed)
-async function getTranslator(progressCallback) {
-  if (translator) {
-    console.log("Translator already loaded.");
-    return translator;
-  }
-
-  if (!translatorPromise) {
-    console.log("Loading Model...");
-    translatorPromise = (async () => {
-      try {
-        console.log("Initializing pipeline...");
-        const t = await pipeline(
-          "translation",
-          "Xenova/nllb-200-distilled-600M",
-          {
-            progress_callback: (data) => {
-              console.log("Pipeline progress:", data);
-              if (progressCallback) progressCallback(data);
-            },
-          }
-        );
-        console.log("Pipeline initialized successfully.");
-        translator = t;
-        // Mark as downloaded in storage
-        await browserAPI.storage.local.set({ model_downloaded: true });
-        return t;
-      } catch (e) {
-        console.error("Failed to load model:", e);
-        translatorPromise = null; // Reset on failure
-        throw e;
-      }
-    })();
-  }
-  return translatorPromise;
-}
-
-// Language Mapping (Tesseract Code -> NLLB Code)
-const langMap = {
-  eng: "eng_Latn",
-  fra: "fra_Latn",
-  ita: "ita_Latn",
-  spa: "spa_Latn",
-  jpn: "jpn_Jpan",
+const uiToDeepL = {
+  en: "EN",
+  fr: "FR",
+  it: "IT",
+  es: "ES",
+  ja: "JA",
+  de: "DE",
+  pt: "PT",
+  ru: "RU",
+  zh: "ZH",
 };
-
-// Language Mapping (UI Code -> NLLB Code)
-// Popup/content send UI codes like "ja", "en", etc.
-const uiLangToNllb = {
-  en: "eng_Latn",
-  fr: "fra_Latn",
-  it: "ita_Latn",
-  es: "spa_Latn",
-  ja: "jpn_Jpan",
-};
-
-function toNllbLang(code) {
-  if (!code || code === "auto") return null;
-  if (uiLangToNllb[code]) return uiLangToNllb[code];
-
-  // Allow callers to pass Tesseract codes directly.
-  if (langMap[code]) return langMap[code];
-
-  // Best-effort: UI code -> Tesseract code -> NLLB
-  const tess = tesseractLangMap[code];
-  if (tess && langMap[tess]) return langMap[tess];
-
-  return null;
-}
-
-function parseTsvToLineBlocks(tsv, joiner = " ") {
-  if (!tsv || typeof tsv !== "string") return [];
-
-  const rows = tsv.split(/\r?\n/).filter(Boolean);
-  if (rows.length < 2) return [];
-
-  const header = rows[0].split("\t");
-  const idx = (name) => header.indexOf(name);
-
-  const levelIdx = idx("level");
-  const pageIdx = idx("page_num");
-  const blockIdx = idx("block_num");
-  const parIdx = idx("par_num");
-  const lineIdx = idx("line_num");
-  const wordIdx = idx("word_num");
-  const leftIdx = idx("left");
-  const topIdx = idx("top");
-  const widthIdx = idx("width");
-  const heightIdx = idx("height");
-  const confIdx = idx("conf");
-  const textIdx = idx("text");
-
-  if (
-    [
-      levelIdx,
-      pageIdx,
-      blockIdx,
-      parIdx,
-      lineIdx,
-      wordIdx,
-      leftIdx,
-      topIdx,
-      widthIdx,
-      heightIdx,
-      confIdx,
-      textIdx,
-    ].some((v) => v === -1)
-  ) {
-    return [];
-  }
-
-  const groups = new Map();
-
-  for (let i = 1; i < rows.length; i++) {
-    const cols = rows[i].split("\t");
-    if (cols.length <= textIdx) continue;
-
-    const level = Number(cols[levelIdx]);
-    const wordNum = Number(cols[wordIdx]);
-
-    // Prefer word-level rows (level 5) so we can rebuild line text.
-    if (level !== 5 || !Number.isFinite(wordNum) || wordNum <= 0) continue;
-
-    const conf = Number(cols[confIdx]);
-    if (!Number.isFinite(conf) || conf < 0) continue;
-
-    const text = (cols[textIdx] || "").trim();
-    if (!text) continue;
-
-    const left = Number(cols[leftIdx]);
-    const top = Number(cols[topIdx]);
-    const width = Number(cols[widthIdx]);
-    const height = Number(cols[heightIdx]);
-    if (
-      ![left, top, width, height].every((n) => Number.isFinite(n)) ||
-      width <= 0 ||
-      height <= 0
-    ) {
-      continue;
-    }
-
-    const key = `${cols[pageIdx]}-${cols[blockIdx]}-${cols[parIdx]}-${cols[lineIdx]}`;
-    const x0 = left;
-    const y0 = top;
-    const x1 = left + width;
-    const y1 = top + height;
-
-    const existing = groups.get(key);
-    if (!existing) {
-      groups.set(key, {
-        parts: [text],
-        confs: [conf],
-        bbox: { x0, y0, x1, y1 },
-      });
-      continue;
-    }
-
-    existing.parts.push(text);
-    existing.confs.push(conf);
-    existing.bbox.x0 = Math.min(existing.bbox.x0, x0);
-    existing.bbox.y0 = Math.min(existing.bbox.y0, y0);
-    existing.bbox.x1 = Math.max(existing.bbox.x1, x1);
-    existing.bbox.y1 = Math.max(existing.bbox.y1, y1);
-  }
-
-  const blocks = [];
-  for (const v of groups.values()) {
-    const text = v.parts.join(joiner).trim();
-    if (!text) continue;
-
-    const confidence =
-      v.confs.reduce((sum, c) => sum + c, 0) / (v.confs.length || 1);
-
-    blocks.push({ text, confidence, bbox: v.bbox });
-  }
-
-  // Keep reading order roughly top-to-bottom, then left-to-right.
-  blocks.sort((a, b) => a.bbox.y0 - b.bbox.y0 || a.bbox.x0 - b.bbox.x0);
-  return blocks;
-}
 
 browserAPI.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   console.log("Background received message:", msg);
@@ -279,109 +48,38 @@ browserAPI.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return { success: false, error: errorMessage };
       });
 
-    // Firefox supports returning a Promise directly
     if (typeof browser !== "undefined" && browser.runtime) {
       return pipelinePromise;
     }
 
-    // Chrome requires returning true and calling sendResponse
     pipelinePromise.then(sendResponse);
     return true;
   }
-
-  if (msg.type === "CHECK_MODEL_STATUS") {
-    checkModelStatus().then((status) => {
-      console.log("Model status:", status);
-      sendResponse(status);
-    });
-    return true;
-  }
-
-  if (msg.type === "DOWNLOAD_MODEL") {
-    console.log("Starting model download...");
-    downloadModel();
-    return true; // Async response not needed as we send messages back
-  }
 });
 
-async function checkModelStatus() {
-  if (translator) return { status: "READY" };
-
-  // Check if previously downloaded
-  const stored = await browserAPI.storage.local.get("model_downloaded");
-  if (stored.model_downloaded) {
-    // Try to load silently
-    getTranslator().catch(console.error);
-    return { status: "LOADING" };
-  }
-
-  return { status: "NOT_LOADED" };
-}
-
-async function downloadModel() {
-  try {
-    await getTranslator((data) => {
-      // Forward progress to popup
-      browserAPI.runtime
-        .sendMessage({
-          type: "DOWNLOAD_PROGRESS",
-          status: data.status,
-          progress: data.progress,
-          file: data.file,
-        })
-        .catch(() => {}); // Ignore errors if popup closed
-    });
-
-    browserAPI.runtime.sendMessage({
-      type: "DOWNLOAD_PROGRESS",
-      status: "done",
-    });
-  } catch (e) {
-    console.error("Download failed", e);
-    browserAPI.runtime.sendMessage({
-      type: "DOWNLOAD_PROGRESS",
-      status: "error",
-      error: e.message,
-    });
-  }
-}
-
-// Helper to fetch image with Referer spoofing using webRequest (Firefox reliable method)
+// Helper to fetch image with Referer spoofing
 async function fetchImageWithReferrer(url, referrer) {
-  // If no referrer needed, just fetch
   if (!referrer) return (await fetch(url)).blob();
 
   const onBeforeSendHeaders = (details) => {
-    // Relaxed matching: Check if it's the same URL or if it contains the filename (to handle minor encoding diffs)
     if (details.url !== url && !details.url.includes(new URL(url).pathname))
       return;
-
-    console.log(`[WebRequest] Intercepted Request: ${details.url}`);
     const headers = details.requestHeaders || [];
-    // Remove existing Referer
     const newHeaders = headers.filter(
       (h) => h.name.toLowerCase() !== "referer"
     );
-    // Add new Referer
     newHeaders.push({ name: "Referer", value: referrer });
-    console.log(`[WebRequest] Set Referer to: ${referrer}`);
     return { requestHeaders: newHeaders };
   };
 
   const onHeadersReceived = (details) => {
     if (details.url !== url && !details.url.includes(new URL(url).pathname))
       return;
-
-    console.log(`[WebRequest] Intercepted Response: ${details.url}`);
     const headers = details.responseHeaders || [];
-    // Add CORS headers to allow the fetch to succeed
     headers.push({ name: "Access-Control-Allow-Origin", value: "*" });
-    console.log(`[WebRequest] Injected Access-Control-Allow-Origin: *`);
     return { responseHeaders: headers };
   };
 
-  // Add listeners
-  // Note: "extraHeaders" is needed in Chrome for some headers, but harmless in Firefox
   browserAPI.webRequest.onBeforeSendHeaders.addListener(
     onBeforeSendHeaders,
     { urls: ["<all_urls>"] },
@@ -400,7 +98,6 @@ async function fetchImageWithReferrer(url, referrer) {
     }
     return await response.blob();
   } finally {
-    // Clean up listeners immediately
     browserAPI.webRequest.onBeforeSendHeaders.removeListener(
       onBeforeSendHeaders
     );
@@ -408,7 +105,6 @@ async function fetchImageWithReferrer(url, referrer) {
   }
 }
 
-// Fallback: ask the content script (in the page context) to fetch the image and return its bytes
 async function fetchImageViaContent(tabId, url) {
   console.log("Falling back to content-script fetch for:", url);
   const response = await browserAPI.tabs.sendMessage(tabId, {
@@ -424,19 +120,108 @@ async function fetchImageViaContent(tabId, url) {
   return new Blob([new Uint8Array(response.buffer)]);
 }
 
+async function compressImage(blob) {
+  const MAX_SIZE = 1024 * 1024; // 1MB
+  if (blob.size <= MAX_SIZE) return blob;
+
+  console.log(`Compressing image (size: ${blob.size})...`);
+  const bitmap = await createImageBitmap(blob);
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(bitmap, 0, 0);
+
+  let quality = 0.9;
+  let compressedBlob = await canvas.convertToBlob({
+    type: "image/jpeg",
+    quality,
+  });
+
+  while (compressedBlob.size > MAX_SIZE && quality > 0.1) {
+    quality -= 0.1;
+    compressedBlob = await canvas.convertToBlob({
+      type: "image/jpeg",
+      quality,
+    });
+  }
+
+  if (compressedBlob.size > MAX_SIZE) {
+    // Resize if quality reduction isn't enough
+    const scale = Math.sqrt(MAX_SIZE / compressedBlob.size);
+    const newWidth = Math.floor(bitmap.width * scale);
+    const newHeight = Math.floor(bitmap.height * scale);
+    const resizedCanvas = new OffscreenCanvas(newWidth, newHeight);
+    const resizedCtx = resizedCanvas.getContext("2d");
+    resizedCtx.drawImage(bitmap, 0, 0, newWidth, newHeight);
+    compressedBlob = await resizedCanvas.convertToBlob({
+      type: "image/jpeg",
+      quality: 0.7,
+    });
+  }
+
+  console.log(`Compressed size: ${compressedBlob.size}`);
+  return compressedBlob;
+}
+
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+async function callOcrApi(base64Image, language) {
+  const formData = new FormData();
+  formData.append("base64Image", base64Image);
+  formData.append("language", uiToOcrSpace[language] || "eng");
+  formData.append("isOverlayRequired", "true");
+  formData.append("scale", "true");
+  formData.append("OCREngine", "2");
+  formData.append("detectOrientation", "true");
+
+  const response = await fetch("https://api.ocr.space/parse/image", {
+    method: "POST",
+    headers: {
+      apikey: OCR_SPACE_KEY,
+    },
+    body: formData,
+  });
+
+  const data = await response.json();
+  if (data.IsErroredOnProcessing) {
+    throw new Error(data.ErrorMessage?.[0] || "OCR API Error");
+  }
+  return data;
+}
+
+async function callDeepLApi(texts, targetLang) {
+  const response = await fetch("https://api-free.deepl.com/v2/translate", {
+    method: "POST",
+    headers: {
+      Authorization: `DeepL-Auth-Key ${DEEPL_AUTH_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      text: texts,
+      target_lang: uiToDeepL[targetLang] || "EN",
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`DeepL API Error: ${response.status}`);
+  }
+
+  return await response.json();
+}
+
 async function handleImagePipeline(msg, tabId) {
   console.log("Starting image pipeline for:", msg.src);
   let currentStep = "Initializing";
-  try {
-    // Ensure translator is loaded (will load from cache if available)
-    currentStep = "Loading Translator";
-    const translatorPipe = await getTranslator();
-    console.log("Translator ready.");
 
+  try {
     // 1. Fetch Image
     currentStep = "Fetching Image";
-    console.log("Fetching image:", msg.src);
-
     let blob;
     try {
       blob = await fetchImageWithReferrer(msg.src, msg.pageUrl);
@@ -444,176 +229,100 @@ async function handleImagePipeline(msg, tabId) {
       console.warn("Fetch with referrer failed, trying direct fetch:", e);
       try {
         const response = await fetch(msg.src, { cache: "no-cache" });
-        if (!response.ok) {
-          throw new Error(
-            `Failed to fetch image: ${response.status} ${response.statusText}`
-          );
-        }
+        if (!response.ok) throw new Error("Fetch failed");
         blob = await response.blob();
       } catch (directErr) {
-        console.warn(
-          "Direct fetch failed, using content-script fallback:",
-          directErr
-        );
         blob = await fetchImageViaContent(tabId, msg.src);
       }
     }
 
-    console.log("Image fetched, size:", blob.size);
+    // 2. Compress if needed
+    currentStep = "Compressing Image";
+    blob = await compressImage(blob);
+    const base64 = await blobToBase64(blob);
 
-    currentStep = "Creating Bitmap";
-    const bitmap = await createImageBitmap(blob);
-    console.log("Bitmap created:", bitmap.width, "x", bitmap.height);
-
-    // 2. OCR (Get Text + Bounding Box)
-    currentStep = "Initializing OCR";
-    console.log("Starting OCR...");
-    const worker = await initOCR(msg.sourceLang);
-    console.log("OCR Worker initialized");
-
+    // 3. OCR
     currentStep = "Running OCR";
-    // Use 'lines' for better context than 'words'
-    const { data } = await worker.recognize(
-      blob,
-      {},
-      {
-        text: true,
-        tsv: true,
-        blocks: true,
-        paragraphs: true,
-        lines: true,
-        words: true,
-      }
-    );
-    console.log("OCR result keys:", Object.keys(data || {}));
-    console.log(
-      "OCR Complete. Found text length:",
-      data?.text ? data.text.length : 0
-    );
+    const ocrResult = await callOcrApi(base64, msg.sourceLang);
 
-    // 3. Translation
-    currentStep = "Translating";
-    const translateParams = {
-      src_lang: toNllbLang(msg.sourceLang) || "eng_Latn", // Defaults if 'auto'
-      tgt_lang: toNllbLang(msg.targetLang) || "eng_Latn",
-    };
-    console.log("Translating with params:", translateParams);
-
-    // 4. Prepare Data for Overlay (No Canvas Drawing)
-    const translatedBlocks = [];
-
-    const MIN_CONFIDENCE = 30;
-
-    // Prefer line/word outputs, but fall back to TSV (reliable bboxes)
-    let ocrBlocks =
-      (Array.isArray(data?.lines) && data.lines.length ? data.lines : null) ||
-      (Array.isArray(data?.words) && data.words.length ? data.words : null) ||
-      (Array.isArray(data?.blocks) && data.blocks.length ? data.blocks : null);
-
-    if (!ocrBlocks) {
-      const joiner = msg.sourceLang === "ja" ? "" : " ";
-      ocrBlocks = parseTsvToLineBlocks(data?.tsv, joiner);
+    const parsedResults = ocrResult.ParsedResults?.[0];
+    if (!parsedResults || !parsedResults.TextOverlay) {
+      console.log("No text found in image.");
+      return { success: true, blocks: [], imgWidth: 0, imgHeight: 0 };
     }
 
-    if (!ocrBlocks || !ocrBlocks[Symbol.iterator]) {
-      throw new Error(
-        "OCR returned no usable blocks (lines/words/blocks empty, and TSV parse produced none)."
-      );
-    }
+    const lines = parsedResults.TextOverlay.Lines;
+    const blocks = [];
 
-    console.log(
-      "OCR blocks extracted:",
-      Array.isArray(ocrBlocks) ? ocrBlocks.length : "(iterable)"
-    );
-    if (Array.isArray(ocrBlocks) && ocrBlocks.length) {
-      const preview = ocrBlocks.slice(0, 5).map((b) => ({
-        text: (typeof b?.text === "string" ? b.text : "").slice(0, 60),
-        confidence:
-          typeof b?.confidence === "number"
-            ? b.confidence
-            : typeof b?.conf === "number"
-            ? b.conf
-            : undefined,
-        bbox: b?.bbox,
-      }));
-      console.log("OCR preview (first 5):", preview);
-    }
+    for (const line of lines) {
+      const words = line.Words;
+      if (!words || words.length === 0) continue;
 
-    let skippedLowConfidence = 0;
-    let skippedNoText = 0;
-    let skippedNoBbox = 0;
-    let translatedLogged = 0;
+      const text = line.LineText;
 
-    for (const block of ocrBlocks) {
-      const confidence =
-        typeof block?.confidence === "number"
-          ? block.confidence
-          : typeof block?.conf === "number"
-          ? block.conf
-          : 0;
+      // Calculate bbox for the line
+      let x0 = Infinity,
+        y0 = Infinity,
+        x1 = -Infinity,
+        y1 = -Infinity;
 
-      if (confidence < MIN_CONFIDENCE) {
-        skippedLowConfidence++;
-        continue;
+      for (const word of words) {
+        x0 = Math.min(x0, word.Left);
+        y0 = Math.min(y0, word.Top);
+        x1 = Math.max(x1, word.Left + word.Width);
+        y1 = Math.max(y1, word.Top + word.Height);
       }
 
-      const rawText = typeof block?.text === "string" ? block.text : "";
-      const text = rawText.trim();
-      if (!text) {
-        skippedNoText++;
-        continue;
-      }
+      const width = x1 - x0;
+      const height = y1 - y0;
+      // Heuristic for vertical text: height is significantly larger than width
+      // and source language is likely to have vertical text (ja, zh, ko)
+      // But we can just check aspect ratio for now.
+      const isVertical = height > width * 2;
 
-      const bbox =
-        block?.bbox &&
-        typeof block.bbox.x0 === "number" &&
-        typeof block.bbox.y0 === "number" &&
-        typeof block.bbox.x1 === "number" &&
-        typeof block.bbox.y1 === "number"
-          ? block.bbox
-          : null;
-
-      if (!bbox) continue;
-      if (!bbox) {
-        skippedNoBbox++;
-        continue;
-      }
-
-      // Translate the line
-      const out = await translatorPipe(text, translateParams);
-      const translatedText = out[0].translation_text;
-
-      if (translatedLogged < 10) {
-        console.log("Translation:", {
-          original: text,
-          translated: translatedText,
-        });
-        translatedLogged++;
-      }
-
-      translatedBlocks.push({
-        text: translatedText,
-        original: text,
-        bbox, // {x0, y0, x1, y1}
+      blocks.push({
+        text,
+        bbox: { x0, y0, x1, y1 },
+        isVertical,
       });
     }
 
-    console.log(
-      `Processed ${translatedBlocks.length} text blocks. Skipped: lowConf=${skippedLowConfidence}, noText=${skippedNoText}, noBbox=${skippedNoBbox}`
+    if (blocks.length === 0) {
+      return { success: true, blocks: [], imgWidth: 0, imgHeight: 0 };
+    }
+
+    // 4. Translate
+    currentStep = "Translating";
+    const textsToTranslate = blocks.map((b) => b.text);
+    const translationResult = await callDeepLApi(
+      textsToTranslate,
+      msg.targetLang
     );
 
-    // 5. Return Data Result
+    const translations = translationResult.translations;
+    if (!translations || translations.length !== blocks.length) {
+      throw new Error("Translation count mismatch");
+    }
+
+    const translatedBlocks = blocks.map((block, index) => ({
+      text: translations[index].text,
+      original: block.text,
+      bbox: block.bbox,
+      isVertical: block.isVertical,
+    }));
+
+    const bitmap = await createImageBitmap(blob);
+
     return {
       success: true,
       originalSrc: msg.src,
       blocks: translatedBlocks,
       imgWidth: bitmap.width,
       imgHeight: bitmap.height,
+      base64Image: base64,
     };
   } catch (e) {
     console.error(`Pipeline failed at step '${currentStep}':`, e);
-    // Ensure we propagate a useful error message
-    const errDetail = e instanceof Error ? e.message : JSON.stringify(e);
-    throw new Error(`[${currentStep}] ${errDetail || "Unknown error"}`);
+    return { success: false, error: e.message };
   }
 }
