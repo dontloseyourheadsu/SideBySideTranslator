@@ -72,14 +72,22 @@ function processQueue() {
           }))
         );
 
-        overlayTranslations(
+        return replaceImageWithTranslation(
           img,
           response.blocks,
           response.imgWidth,
-          response.imgHeight
-        );
-        img.dataset.status = "done";
-        overlay.remove(); // Remove the "Queued" overlay
+          response.imgHeight,
+          response.base64Image
+        ).then(() => {
+          img.dataset.status = "done";
+          overlay.remove(); // Remove the "Queued" overlay
+          // Unwrap
+          const wrapper = img.parentElement;
+          if (wrapper && wrapper.style.position === "relative") {
+            wrapper.parentNode.insertBefore(img, wrapper);
+            wrapper.remove();
+          }
+        });
       } else {
         console.error(
           "Background reported error or missing data:",
@@ -104,46 +112,68 @@ function processQueue() {
     });
 }
 
-function overlayTranslations(img, blocks, originalWidth, originalHeight) {
-  // Ensure the wrapper is positioned correctly
-  const wrapper = img.parentElement;
+function replaceImageWithTranslation(
+  img,
+  blocks,
+  originalWidth,
+  originalHeight,
+  base64Image
+) {
+  return new Promise((resolve) => {
+    const canvas = document.createElement("canvas");
+    canvas.width = originalWidth;
+    canvas.height = originalHeight;
+    const ctx = canvas.getContext("2d");
 
-  // Calculate scaling factors (displayed size vs natural size)
-  const scaleX = img.width / originalWidth;
-  const scaleY = img.height / originalHeight;
+    const image = new Image();
+    image.onload = () => {
+      ctx.drawImage(image, 0, 0);
 
-  blocks.forEach((block) => {
-    const { x0, y0, x1, y1 } = block.bbox;
+      blocks.forEach((block) => {
+        const { x0, y0, x1, y1 } = block.bbox;
+        const width = x1 - x0;
+        const height = y1 - y0;
 
-    const div = document.createElement("div");
-    div.innerText = block.text;
-    div.title = block.original; // Tooltip shows original text
+        // Draw background box
+        ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+        ctx.fillRect(x0, y0, width, height);
 
-    // Style the overlay box
-    div.style.position = "absolute";
-    div.style.left = `${x0 * scaleX}px`;
-    div.style.top = `${y0 * scaleY}px`;
-    div.style.width = `${(x1 - x0) * scaleX}px`;
-    div.style.height = `${(y1 - y0) * scaleY}px`;
+        // Draw text
+        ctx.fillStyle = "black";
+        ctx.textBaseline = "middle";
+        ctx.textAlign = "center";
 
-    div.style.backgroundColor = "rgba(255, 255, 255, 0.9)";
-    div.style.color = "black";
-    div.style.fontSize = `${(y1 - y0) * scaleY * 0.8}px`; // 80% of height
-    div.style.lineHeight = "1";
-    div.style.display = "flex";
-    div.style.alignItems = "center";
-    div.style.justifyContent = "center";
-    div.style.overflow = "hidden";
-    div.style.whiteSpace = "nowrap";
-    div.style.fontFamily = "Arial, sans-serif";
-    div.style.zIndex = "900";
-    div.style.pointerEvents = "auto"; // Allow hovering for tooltip
-    div.style.cursor = "help";
+        let fontSize;
+        if (block.isVertical) {
+          // For vertical text converted to horizontal (e.g. JP -> EN)
+          // We use the width of the vertical column as a base for font size,
+          // but ensure it's readable.
+          // Since we are writing horizontally over a vertical strip, we center it.
+          fontSize = Math.max(14, width * 0.6); // Heuristic
+          ctx.font = `bold ${fontSize}px Arial`;
 
-    wrapper.appendChild(div);
+          // We don't constrain width for vertical-to-horizontal replacement
+          // to allow it to overflow horizontally if needed.
+          ctx.fillText(block.text, x0 + width / 2, y0 + height / 2);
+        } else {
+          // Horizontal text
+          // Font size based on height, but clamped
+          fontSize = Math.max(12, height * 0.8);
+          ctx.font = `${fontSize}px Arial`;
+
+          // Allow some overflow by not passing maxWidth, or passing a generous one
+          // The user said "display it even if it overflows a little"
+          // So we just draw it centered.
+          ctx.fillText(block.text, x0 + width / 2, y0 + height / 2);
+        }
+      });
+
+      img.src = canvas.toDataURL("image/jpeg");
+      img.style.border = "3px solid #4CAF50"; // Green border = Success
+      resolve();
+    };
+    image.src = base64Image;
   });
-
-  img.style.border = "3px solid #4CAF50"; // Green border = Success
 }
 
 function scanAndTranslate(settings) {
@@ -152,7 +182,7 @@ function scanAndTranslate(settings) {
   console.log(`Found ${images.length} images.`);
 
   images.forEach((img) => {
-    if (img.width < 50 || img.height < 50 || img.dataset.status) return; // Skip small/processed
+    if (img.width < 64 || img.height < 64 || img.dataset.status) return; // Skip small/processed
 
     console.log("Queueing image:", img.src);
     img.dataset.status = "queued";
