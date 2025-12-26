@@ -1,8 +1,7 @@
-import dotenv from "../node_modules/dotenv";
-dotenv.config();
+import { config } from "./config.js";
 
-const OCR_SPACE_KEY = process.env.OCR_SPACE_KEY;
-const DEEPL_AUTH_KEY = process.env.DEEPL_AUTH_KEY;
+const OCR_SPACE_KEY = config.OCR_SPACE_KEY;
+const DEEPL_AUTH_KEY = config.DEEPL_AUTH_KEY;
 
 const browserAPI = self.browser || self.chrome;
 
@@ -174,10 +173,18 @@ function blobToBase64(blob) {
 async function callOcrApi(base64Image, language) {
   const formData = new FormData();
   formData.append("base64Image", base64Image);
-  formData.append("language", uiToOcrSpace[language] || "eng");
+
+  const ocrLanguage = uiToOcrSpace[language] || "eng";
+  formData.append("language", ocrLanguage);
+
   formData.append("isOverlayRequired", "true");
   formData.append("scale", "true");
-  formData.append("OCREngine", "2");
+
+  // Engine 1 is required for Japanese (and other Asian languages except Chinese)
+  // Engine 2 supports Western languages and Chinese
+  const engine = ocrLanguage === "jpn" ? "1" : "2";
+  formData.append("OCREngine", engine);
+
   formData.append("detectOrientation", "true");
 
   const response = await fetch("https://api.ocr.space/parse/image", {
@@ -232,6 +239,10 @@ async function handleImagePipeline(msg, tabId) {
         if (!response.ok) throw new Error("Fetch failed");
         blob = await response.blob();
       } catch (directErr) {
+        console.warn(
+          "Direct fetch failed, falling back to content script:",
+          directErr
+        );
         blob = await fetchImageViaContent(tabId, msg.src);
       }
     }
@@ -275,9 +286,6 @@ async function handleImagePipeline(msg, tabId) {
 
       const width = x1 - x0;
       const height = y1 - y0;
-      // Heuristic for vertical text: height is significantly larger than width
-      // and source language is likely to have vertical text (ja, zh, ko)
-      // But we can just check aspect ratio for now.
       const isVertical = height > width * 2;
 
       blocks.push({

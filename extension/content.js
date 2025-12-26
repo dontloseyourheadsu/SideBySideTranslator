@@ -206,6 +206,16 @@ function scanAndTranslate(settings) {
     overlay.style.zIndex = "1000";
     wrapper.appendChild(overlay);
 
+    const translatedTextContainer = document.createElement("div");
+    translatedTextContainer.style.position = "absolute";
+    translatedTextContainer.style.background = "rgba(0, 0, 0, 0.8)"; // Dark semi-transparent background
+    translatedTextContainer.style.color = "white"; // Ensure text is readable
+    translatedTextContainer.style.padding = "5px";
+    translatedTextContainer.style.borderRadius = "5px";
+    translatedTextContainer.style.zIndex = "1000";
+    translatedTextContainer.style.fontSize = "14px"; // Adjust font size for readability
+    wrapper.appendChild(translatedTextContainer);
+
     imageQueue.push({ img, settings, wrapper, overlay });
   });
 
@@ -215,9 +225,14 @@ function scanAndTranslate(settings) {
 async function sendMessageWithRetry(msg, retries = 5, delay = 1000) {
   for (let i = 0; i < retries; i++) {
     try {
+      console.log(`Attempt ${i + 1} to send message:`, msg);
       return await browser.runtime.sendMessage(msg);
     } catch (err) {
-      if (i === retries - 1) throw err;
+      console.error(`Attempt ${i + 1} failed:`, err);
+      if (i === retries - 1) {
+        console.error("All retry attempts failed.");
+        throw err;
+      }
       // Wait before retrying
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
